@@ -1,0 +1,230 @@
+WITH
+-- 1) Günler: 1..30
+days(day) AS (
+  SELECT 1 FROM dual
+  UNION ALL
+  SELECT day + 1 FROM days WHERE day < 30
+),
+
+-- 2) Variant metrikleri
+variants AS (
+  SELECT 'A' AS variant,
+         0.0305 AS daily_purchase_ratio,
+         9.8    AS ecpm,
+         2.3    AS ad_imp_per_dau,
+         0.53   AS r1,
+         0.27   AS r3,
+         0.17   AS r7,
+         0.06   AS r14
+  FROM dual
+  UNION ALL
+  SELECT 'B',
+         0.0315,
+         10.8,
+         1.6,
+         0.48,
+         0.25,
+         0.19,
+         0.09
+  FROM dual
+),
+
+-- 3) Cohort ve calendar günleri
+cohort AS (
+  SELECT day AS cohort_day FROM days
+),
+calendar AS (
+  SELECT day AS calendar_day FROM days
+),
+
+-- 4) Base retention (step function)
+cohort_age_base AS (
+  SELECT
+    v.variant,
+    c.cohort_day,
+    d.calendar_day,
+    (d.calendar_day - c.cohort_day + 1) AS age,
+    CASE
+      WHEN (d.calendar_day - c.cohort_day + 1) = 1 THEN v.r1
+      WHEN (d.calendar_day - c.cohort_day + 1) BETWEEN 2 AND 3 THEN v.r3
+      WHEN (d.calendar_day - c.cohort_day + 1) BETWEEN 4 AND 7 THEN v.r7
+      ELSE v.r14
+    END AS retention
+  FROM variants v
+  CROSS JOIN cohort c
+  JOIN calendar d
+    ON d.calendar_day >= c.cohort_day
+),
+
+-- 5) Base DAU (20.000 install/gün)
+daily_dau_base AS (
+  SELECT
+    variant,
+    calendar_day,
+    SUM(20000 * retention) AS dau
+  FROM cohort_age_base
+  GROUP BY variant, calendar_day
+),
+
+-- 6) Base günlük gelir (purchase + ads)
+daily_revenue_base AS (
+  SELECT
+    d.variant,
+    d.calendar_day,
+    (20000 * v.daily_purchase_ratio) AS purchase_rev,
+    (d.dau * v.ad_imp_per_dau * (v.ecpm / 1000)) AS ad_rev
+  FROM daily_dau_base d
+  JOIN variants v
+    ON d.variant = v.variant
+),
+
+-- 7) 10 günlük sale senaryosu (Day 15–24, purchase ratio +0.01)
+daily_revenue_sale AS (
+  SELECT
+    d.variant,
+    d.calendar_day,
+    (20000 *
+      CASE
+        WHEN d.calendar_day BETWEEN 15 AND 24
+          THEN v.daily_purchase_ratio + 0.01
+        ELSE v.daily_purchase_ratio
+      END
+    ) AS total_rev_sale_purchase,
+    (d.dau * v.ad_imp_per_dau * (v.ecpm / 1000)) AS total_rev_sale_ads
+  FROM daily_dau_base d
+  JOIN variants v
+    ON d.variant = v.variant
+),
+
+-- 8) Yeni user source senaryosu için retention tabloları
+old_source_retention AS (
+  SELECT
+    v.variant,
+    d.day AS age,
+    CASE
+      WHEN d.day = 1 THEN v.r1
+      WHEN d.day BETWEEN 2 AND 3 THEN v.r3
+      WHEN d.day BETWEEN 4 AND 7 THEN v.r7
+      ELSE v.r14
+    END AS retention
+  FROM variants v
+  CROSS JOIN days d
+),
+
+new_source_retention AS (
+  SELECT
+    v.variant,
+    d.day AS age,
+    CASE
+      WHEN v.variant = 'A'
+        THEN 0.58 * EXP(-0.12 * (d.day - 1))
+      WHEN v.variant = 'B'
+        THEN 0.52 * EXP(-0.10 * (d.day - 1))
+    END AS retention
+  FROM variants v
+  CROSS JOIN days d
+),
+
+-- 9) Yeni source: cohort + aktif kullanıcı sayısı
+--    Day 1–19: sadece eski source (20k)
+--    Day 20+: 12k eski + 8k yeni
+cohort_age_newsource AS (
+  SELECT
+    v.variant,
+    c.cohort_day,
+    d.calendar_day,
+    (d.calendar_day - c.cohort_day + 1) AS age,
+    CASE
+      WHEN c.cohort_day < 20 THEN
+        20000 * o.retention
+      ELSE
+        12000 * o.retention + 8000 * n.retention
+    END AS active_users
+  FROM variants v
+  CROSS JOIN cohort c
+  JOIN calendar d
+    ON d.calendar_day >= c.cohort_day
+  JOIN old_source_retention o
+    ON o.variant = v.variant
+   AND o.age = (d.calendar_day - c.cohort_day + 1)
+  JOIN new_source_retention n
+    ON n.variant = v.variant
+   AND n.age = (d.calendar_day - c.cohort_day + 1)
+),
+
+daily_dau_newsource AS (
+  SELECT
+    variant,
+    calendar_day,
+    SUM(active_users) AS dau
+  FROM cohort_age_newsource
+  GROUP BY variant, calendar_day
+),
+
+daily_revenue_newsource AS (
+  SELECT
+    d.variant,
+    d.calendar_day,
+    (20000 * v.daily_purchase_ratio) AS purchase_rev,
+    (d.dau * v.ad_imp_per_dau * (v.ecpm / 1000)) AS ad_rev
+  FROM daily_dau_newsource d
+  JOIN variants v
+    ON d.variant = v.variant
+)
+
+
+-- 10) Cevaplar
+ SELECT
+  'A' AS Question,
+  b.variant,
+  15 AS day_limit,
+  b.dau AS value
+FROM daily_dau_base b
+WHERE b.calendar_day = 15
+
+UNION ALL
+
+SELECT
+  'B' AS Question,
+  r.variant,
+  15 AS day_limit,
+  SUM(r.purchase_rev + r.ad_rev) AS value
+FROM daily_revenue_base r
+WHERE r.calendar_day <= 15
+GROUP BY r.variant
+
+UNION ALL
+
+SELECT
+  'C' AS Question,
+  r.variant,
+  30 AS day_limit,
+  SUM(r.purchase_rev + r.ad_rev) AS value
+FROM daily_revenue_base r
+WHERE r.calendar_day <= 30
+GROUP BY r.variant
+
+UNION ALL
+
+SELECT
+  'D' AS Question,
+  r.variant,
+  30 AS day_limit,
+  SUM(r.total_rev_sale_purchase + r.total_rev_sale_ads) AS value
+FROM daily_revenue_sale r
+WHERE r.calendar_day <= 30
+GROUP BY r.variant
+
+UNION ALL
+
+SELECT
+  'E' AS Question,
+  r.variant,
+  30 AS day_limit,
+  SUM(r.purchase_rev + r.ad_rev) AS value
+FROM daily_revenue_newsource r
+WHERE r.calendar_day <= 30
+GROUP BY r.variant
+
+ORDER BY Question, variant
+;

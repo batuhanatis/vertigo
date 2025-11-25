@@ -1,0 +1,47 @@
+with first_day as (
+  select
+    user_id,
+    case
+      WHEN total_session_count >= 5 THEN 'High'
+      WHEN total_session_count BETWEEN 2 AND 4 THEN 'Medium'
+      ELSE 'Low'
+    END AS engagement_segment
+  FROM vertigo_games.vertigo_games
+  WHERE event_date = install_date
+),
+
+lifetime as (
+  select
+    user_id,
+    SUM(total_session_count) AS lifetime_sessions,
+    SUM(total_session_duration) AS lifetime_duration,
+    SUM(iap_revenue + ad_revenue) AS lifetime_revenue,
+    COUNT(DISTINCT event_date) AS active_days
+  FROM vertigo_games.vertigo_games
+  GROUP BY user_id
+),
+
+segment_join as (
+  select
+    f.engagement_segment,
+    l.user_id,
+    l.lifetime_sessions,
+    l.lifetime_duration,
+    l.lifetime_revenue,
+    l.active_days
+  FROM first_day f
+  JOIN lifetime l USING (user_id)
+)
+
+select
+  engagement_segment,
+  count(*) AS users,
+  avg(lifetime_sessions) AS avg_lifetime_sessions,
+  avg(lifetime_duration) AS avg_lifetime_duration,
+  avg(active_days) AS avg_active_days,
+  sum(lifetime_revenue) AS total_revenue,
+  avg(lifetime_revenue) AS arpu,
+  sum(lifetime_revenue) AS total_segment_revenue
+FROM segment_join
+GROUP BY engagement_segment
+ORDER BY total_revenue DESC;

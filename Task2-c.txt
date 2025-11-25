@@ -1,0 +1,107 @@
+with 
+user_stats as 
+(
+select
+	user_id,
+	sum(victory_count)
+as victories,
+	sum(defeat_count)
+as defeats,
+	sum(iap_revenue
++ ad_revenue)
+as revenue,
+	safe_divide(sum(victory_count),
+	nullif(sum(victory_count)
++ sum(defeat_count),
+	0))
+as win_rate
+from
+	vertigo_games.vertigo_games
+group by
+	user_id
+
+),
+
+
+
+segmented 
+as (
+select
+	user_id,
+	victories,
+	defeats,
+	revenue,
+	win_rate,
+	case
+		when 
+win_rate >= 
+0.55 then 
+'high_skill'
+		else 
+'low_skill'
+	end 
+as skill_segment,
+	case
+		when 
+revenue >= 
+0.01 then 
+'high_spend'
+		else 
+'low_spend'
+	end 
+as spend_segment
+from
+	user_stats
+
+),
+
+
+
+skill_spend_meta 
+as (
+select
+	*,
+	case
+		when 
+skill_segment = 'high_skill'
+		and spend_segment = 
+'high_spend' then 
+'high skill high spend'
+		when 
+skill_segment = 'low_skill'
+		and spend_segment = 
+'high_spend' then 
+'low skill high spend'
+		when 
+skill_segment = 'high_skill'
+		and spend_segment = 
+'low_spend' then 
+'high skill low spend'
+		else 
+'low skill low spend'
+	end 
+as skill_spend_segment
+from
+	segmented
+
+)
+
+
+
+select
+	skill_spend_segment,
+	count(*)
+as users,
+	avg(win_rate)
+as avg_win_rate,
+	avg(revenue)
+as arpu,
+	sum(revenue)
+as total_revenue
+from
+	skill_spend_meta
+group by
+	skill_spend_segment
+order by
+	total_revenue 
+desc;

@@ -1,0 +1,176 @@
+with 
+user_behavior as 
+(
+select
+	user_id,
+	min(event_date)
+as first_seen,
+	sum(match_start_count)
+as matches,
+	sum(defeat_count)
+as defeats,
+	sum(total_session_count)
+as sessions,
+	sum(total_session_duration)
+as playtime,
+	count(distinct
+event_date)
+as active_days,
+	sum(iap_revenue
++ ad_revenue)
+as total_revenue,
+	min(if(iap_revenue
+> 0,
+event_date, 
+null)) 
+as first_purchase_date
+from
+	vertigo_games.vertigo_games
+group by
+	user_id
+
+),
+
+
+
+behavior_to_purchase 
+as (
+select
+	b.*,
+	date_diff(b.first_purchase_date,
+	b.first_seen,
+	day) 
+as days_before_purchase,
+	safe_divide(b.matches,
+	nullif(b.active_days,
+	0))
+as matches_per_day,
+	safe_divide(b.defeats,
+	nullif(b.matches,
+	0))
+as defeat_rate
+from
+	user_behavior b
+
+),
+
+
+
+segmented 
+as (
+select
+	user_id,
+	total_revenue,
+	days_before_purchase,
+	matches_per_day,
+	defeat_rate,
+	case
+		when 
+total_revenue = 0 
+then 'non_spender'
+		when 
+days_before_purchase is 
+not null
+		and days_before_purchase 
+<= 1
+
+then 
+'immediate_buyer'
+		when 
+days_before_purchase is 
+not null
+		and 
+matches_per_day >= 
+3
+		and 
+defeat_rate >= 
+0.45
+
+then 
+'rage_buyer'
+		when 
+days_before_purchase is 
+not null
+		and 
+matches_per_day between 
+1 and 
+3
+		and 
+days_before_purchase between 
+3 and 
+20
+
+then 
+'strategic_buyer'
+		when 
+days_before_purchase is 
+not null
+		and 
+days_before_purchase > 
+20
+
+then 
+'late_monetizer'
+		else 
+'others'
+	end 
+as monetization_path
+from
+	behavior_to_purchase
+
+),
+
+
+
+global_totals 
+as (
+select
+	count(*)
+as total_users,
+	sum(total_revenue)
+as global_revenue
+from
+	segmented
+
+)
+
+
+
+select
+	s.monetization_path 
+as segment,
+	count(*)
+as users,
+	sum(s.total_revenue)
+as total_revenue,
+	avg(s.total_revenue)
+as arpu,
+	-- retention / behavior metrik ortalamaları
+
+	avg(days_before_purchase)
+as avg_days_before_purchase,
+	avg(matches_per_day)
+as avg_matches_per_day,
+	avg(defeat_rate)
+as avg_defeat_rate,
+	-- dağılım oranları
+
+	count(*)
+* 1.0
+/ gt.total_users
+as user_share,
+	safe_divide(sum(s.total_revenue),
+	gt.global_revenue)
+as revenue_share
+from
+	segmented s
+cross 
+join global_totals 
+gt
+group by
+	segment,
+	gt.total_users,
+	gt.global_revenue
+order by
+	total_revenue 
+desc;

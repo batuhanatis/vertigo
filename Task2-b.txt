@@ -1,0 +1,46 @@
+WITH 
+base as 
+(
+SELECT
+user_id,
+country,
+total_session_count,
+total_session_duration,
+(iap_revenue + ad_revenue) as revenue,
+event_date
+
+FROM 
+vertigo_games.vertigo_games
+),
+
+lifetime as (
+
+select
+
+user_id,
+country,
+sum(total_session_count) as lifetime_sessions,
+sum(total_session_duration) as lifetime_duration,
+sum(revenue) as lifetime_revenue,
+
+COUNT(DISTINCT event_date) as active_days
+FROM base
+
+GROUP BY user_id, 
+country
+)
+
+SELECT
+country,
+count(distinct user_id) as users,
+sum(lifetime_revenue) as total_revenue,
+sum(lifetime_revenue) / count(distinct user_id) as arpu,
+avg(lifetime_sessions) as avg_sessions,
+avg(lifetime_duration) as avg_duration,
+avg(active_days) as avg_active_days
+
+FROM lifetime
+
+GROUP BY country
+ORDER BY total_revenue DESC
+;
